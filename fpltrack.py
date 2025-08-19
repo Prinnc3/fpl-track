@@ -77,16 +77,35 @@ def build_players_df(bootstrap: dict) -> pd.DataFrame:
 
 
 def build_fdr(fixtures: List[dict], horizon_days: int = 42) -> pd.DataFrame:
-    now = datetime.utcnow()
-    horizon = now + timedelta(days=horizon_days)
+    """
+    Build a simple Fixture Difficulty Rating (FDR) per team for upcoming fixtures.
+
+    Fixes timezone comparison issues by using timezone-aware UTC timestamps for 'now' so that
+    comparisons with kickoff times (which are parsed as UTC-aware) do not raise TypeError.
+    """
+    # Use timezone-aware UTC 'now' to match kickoff (which we parse as UTC)
+    now = pd.Timestamp.utcnow().tz_localize('UTC')
+    horizon = now + pd.Timedelta(days=horizon_days)
+
     fdf = pd.DataFrame(fixtures).copy()
     if fdf.empty:
         return pd.DataFrame()
+
+    # Parse kickoff_time (if present) as timezone-aware UTC datetimes
     if 'kickoff_time' in fdf.columns:
         fdf['kickoff'] = pd.to_datetime(fdf['kickoff_time'], utc=True, errors='coerce')
+    elif 'kickoff' in fdf.columns:
+        fdf['kickoff'] = pd.to_datetime(fdf['kickoff'], utc=True, errors='coerce')
     else:
         fdf['kickoff'] = pd.NaT
-    fdf_upcoming = fdf[(fdf['kickoff'] >= now) & (fdf['kickoff'] <= horizon)]
+
+    # Filter upcoming fixtures safely
+    try:
+        fdf_upcoming = fdf[(fdf['kickoff'] >= now) & (fdf['kickoff'] <= horizon)]
+    except TypeError:
+        # In case of mixed tz-aware/naive issues, coerce kickoff to UTC-aware and retry
+        fdf['kickoff'] = pd.to_datetime(fdf['kickoff'], utc=True, errors='coerce')
+        fdf_upcoming = fdf[(fdf['kickoff'] >= now) & (fdf['kickoff'] <= horizon)]
 
     team_scores = {}
     for _, row in fdf_upcoming.iterrows():
@@ -98,9 +117,15 @@ def build_fdr(fixtures: List[dict], horizon_days: int = 42) -> pd.DataFrame:
         dh = row.get('team_h_difficulty', row.get('difficulty'))
         da = row.get('team_a_difficulty', row.get('difficulty'))
         if pd.notna(dh):
-            team_scores.setdefault(th, []).append(int(dh))
+            try:
+                team_scores.setdefault(th, []).append(int(dh))
+            except Exception:
+                pass
         if pd.notna(da):
-            team_scores.setdefault(ta, []).append(int(da))
+            try:
+                team_scores.setdefault(ta, []).append(int(da))
+            except Exception:
+                pass
 
     rows = []
     for team, scores in team_scores.items():
